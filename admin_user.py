@@ -1,5 +1,6 @@
 import os
 import time
+import hashlib
 import pandas as pd
 import streamlit as st
 from sqlalchemy import create_engine, text, Engine
@@ -41,22 +42,26 @@ def get_engine(dsn: str) -> Engine:
 
 DB_ENGINE = get_engine(_resolve_db_url())
 
-# SECURITY: KEMBALI KE BCRYPT-SHA256
-# Skema 'bcrypt_sha256' di passlib otomatis menangani password panjang (>72 char)
-# dengan cara memadatkan input menggunakan SHA256 sebelum masuk ke Bcrypt.
-# Kita tambahkan 'pbkdf2_sha256' di list agar hash lama (jika ada) tetap terbaca.
+# SECURITY: MANUAL SHA-256 + BCRYPT
+# Kita gunakan 'bcrypt' murni, tapi inputnya kita 'masak' dulu dengan SHA-256
+# agar panjangnya selalu konsisten (64 karakter hex) dan tidak pernah kena limit 72 bytes.
 pwd_context = CryptContext(
-    schemes=["bcrypt_sha256", "pbkdf2_sha256"], 
-    default="bcrypt_sha256", 
+    schemes=["bcrypt"], 
     deprecated="auto"
 )
 
 def hash_safe(password: str) -> str:
     """
-    Hashing menggunakan bcrypt-sha256. 
-    Input 'password' (plain) akan otomatis di-handle passlib.
+    Solusi Anti-Error 72 Bytes:
+    1. Ubah password jadi SHA-256 Hex (Pasti 64 karakter).
+    2. Hash hasil tersebut dengan Bcrypt.
     """
-    return pwd_context.hash(password.strip())
+    # Langkah 1: Pre-hash
+    pass_utf8 = password.strip().encode('utf-8')
+    sha_signature = hashlib.sha256(pass_utf8).hexdigest()
+    
+    # Langkah 2: Bcrypt
+    return pwd_context.hash(sha_signature)
 
 # --------------------
 # 3. FUNGSI DATA (CRUD)
@@ -80,6 +85,7 @@ def fetch_users():
         return pd.read_sql(text(query), conn)
 
 def add_user_to_db(username, password, cabang):
+    # Password akan di-prehash dulu di dalam hash_safe
     hashed = hash_safe(password)
     with DB_ENGINE.begin() as conn:
         conn.execute(
@@ -169,7 +175,7 @@ def admin_dashboard():
                         try:
                             add_user_to_db(u, p, c_input)
                             st.success(f"✅ Sukses! User **{u}** untuk cabang **{c_input}** berhasil dibuat.")
-                            st.cache_data.clear() # Clear cache agar list update
+                            st.cache_data.clear() 
                             time.sleep(1.5)
                         except IntegrityError:
                             st.error(f"⛔ Username **{u}** sudah terpakai. Coba yang lain.")
@@ -192,11 +198,9 @@ def admin_dashboard():
                 st.info("Belum ada data user.")
             else:
                 for idx, row in df_users.iterrows():
-                    # Expander Styling
                     with st.expander(f"👤 **{row.username}** (📍 {row.cabang})"):
                         st.caption(f"📅 Dibuat pada: {row.tgl_dibuat}")
                         
-                        # Layout dalam expander
                         c_reset, c_delete = st.columns([2, 1])
                         
                         # Bagian Reset Password
@@ -232,7 +236,6 @@ def admin_dashboard():
         
         if st.button("Test Login Check"):
             with DB_ENGINE.connect() as conn:
-                # Ambil data user dari DB
                 query = text("SELECT username, hashed_password FROM pwh.users WHERE username = :u")
                 result = conn.execute(query, {"u": d_user.strip()})
                 user_data = result.mappings().fetchone()
@@ -242,29 +245,21 @@ def admin_dashboard():
             else:
                 st.info("User ditemukan, memulai pengecekan...")
                 
-                # --- MULAI KODE DEBUG REQUEST ANDA ---
                 password = d_pass 
-                password_to_check = password
                 
-                # --- DEBUGGING SEMENTARA ---
-                st.write(f"String yang dicek: {password_to_check}")
-                st.write(f"Panjang karakter: {len(password_to_check)}")
-                st.write(f"Tipe data: {type(password_to_check)}")
+                # --- PENTING: Lakukan Pre-Hash yang SAMA saat Verifikasi ---
+                pass_utf8 = password.strip().encode('utf-8')
+                password_to_check = hashlib.sha256(pass_utf8).hexdigest()
+                # -----------------------------------------------------------
                 
-                # Tampilkan Hash dari DB
-                st.code(f"Hash di DB: {user_data['hashed_password']}")
-                # ---------------------------
-
+                st.write(f"Pre-Hashed SHA256: `{password_to_check}`")
+                
                 if pwd_context.verify(password_to_check, user_data['hashed_password']):
                     st.success("✅ PASSWORD COCOK / VALID!")
                     st.balloons()
                 else:
                     st.error("❌ PASSWORD SALAH / TIDAK COCOK!")
-                # --- AKHIR KODE DEBUG ---
 
-# --------------------
-# MAIN EXECUTION
-# --------------------
 if __name__ == "__main__":
     if not st.session_state.master_auth_ok:
         check_master_key()
