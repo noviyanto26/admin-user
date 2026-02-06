@@ -1,6 +1,5 @@
 import os
 import time
-import hashlib  # <--- WAJIB: Import hashlib untuk pre-hashing manual
 import pandas as pd
 import streamlit as st
 from sqlalchemy import create_engine, text, Engine
@@ -18,74 +17,60 @@ if "show_form" not in st.session_state:
 # --------------------
 # KONFIGURASI APLIKASI
 # --------------------
-st.set_page_config(page_title="Admin - Manajemen User", page_icon="🔑", layout="centered")
-st.title("🔑 Manajemen User Registry Hemofilia Indonesia")
+st.set_page_config(page_title="Admin User", page_icon="🛡️", layout="centered")
+st.title("🛡️ Manajemen User (PBKDF2)")
+
+# INDIKATOR DEBUG (Agar Anda yakin kode baru yang jalan)
+st.sidebar.success("System Status: Updated (v3.0)")
 
 # -----------------------------
 # KONEKSI DATABASE
 # -----------------------------
 def _resolve_db_url() -> str:
     url = st.secrets.get("DATABASE_URL")
-    
     if not url:
         url = os.environ.get("DATABASE_URL")
+    if url and url.startswith("postgres://"):
+        url = url.replace("postgres://", "postgresql://", 1)
+    if not url:
+        st.error("DATABASE_URL tidak ditemukan.")
+        st.stop()
+    return url
 
-    if url:
-        if url.startswith("postgres://"):
-            url = url.replace("postgres://", "postgresql://", 1)
-        return url
-    
-    st.error("DATABASE_URL tidak ditemukan. Cek Secrets Streamlit.")
-    st.stop()
-
-@st.cache_resource(show_spinner="Menghubungkan ke database...")
+@st.cache_resource(show_spinner="Koneksi DB...")
 def get_engine(dsn: str) -> Engine:
     try:
         engine = create_engine(dsn, pool_pre_ping=True)
-        with engine.connect() as conn:
-            conn.execute(text("SELECT 1"))
         return engine
     except Exception as e:
-        st.error(f"Gagal terhubung ke database: {e}")
+        st.error(f"DB Error: {e}")
         st.stop()
 
 DB_URL = _resolve_db_url()
 DB_ENGINE = get_engine(DB_URL)
 
 # --------------------
-# KEAMANAN PASSWORD (SOLUSI FINAL MANUAL)
+# KEAMANAN PASSWORD (GANTI ALGORITMA)
 # --------------------
-# Kita gunakan 'bcrypt' standar, tapi inputnya kita proses dulu manual
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+# KITA GANTI KE 'pbkdf2_sha256'.
+# Algoritma ini TIDAK punya limit 72 bytes seperti Bcrypt.
+# Jadi password sepanjang apapun (misal 500 karakter) aman.
+pwd_context = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
 
 def hash_safe(password: str) -> str:
     """
-    Solusi Anti-Gagal Limit 72 Bytes:
-    1. Bersihkan spasi (strip).
-    2. Ubah password jadi SHA256 Hex Digest (pasti 64 karakter).
-    3. Hash string 64 karakter tersebut dengan Bcrypt.
-    
-    Hasil: Input ke Bcrypt PASTI 64 bytes, jauh di bawah limit 72 bytes.
+    Hashing menggunakan PBKDF2-SHA256.
+    Aman, standar industri, dan tanpa limit panjang karakter.
     """
     try:
-        # 1. Sanitasi
-        clean_pw = password.strip()
-        if not clean_pw:
-            raise ValueError("Password kosong")
-            
-        # 2. Pre-hashing SHA256 (Menghasilkan string hex 64 karakter)
-        # Contoh: "4c3h-1#" -> "a8f3..." (64 chars)
-        sha_signature = hashlib.sha256(clean_pw.encode('utf-8')).hexdigest()
-        
-        # 3. Bcrypt Hashing
-        return pwd_context.hash(sha_signature)
+        return pwd_context.hash(password.strip())
     except Exception as e:
-        raise ValueError(f"Gagal melakukan hashing: {e}")
+        raise ValueError(f"Hashing failed: {e}")
 
 # --------------------
 # DATA CABANG
 # --------------------
-@st.cache_data(show_spinner="Memuat daftar cabang...")
+@st.cache_data
 def fetch_cabang_list(_engine: Engine) -> list:
     try:
         query = text("SELECT DISTINCT cabang FROM pwh.hmhi_cabang WHERE cabang IS NOT NULL ORDER BY cabang")
@@ -93,178 +78,101 @@ def fetch_cabang_list(_engine: Engine) -> list:
             df = pd.read_sql(query, conn)
         return [""] + df["cabang"].dropna().tolist()
     except Exception:
-        return ["", "Pusat", "Aceh", "Sumatera Utara", "DKI Jakarta", "Jawa Barat", "Jawa Tengah", "DI Yogyakarta", "Jawa Timur", "Bali"]
+        return ["", "Pusat", "Jawa Barat", "DKI Jakarta"] # Fallback
 
 # --------------------
 # CEK MASTER KEY
 # --------------------
 def check_master_key():
     MASTER_KEY = st.secrets.get("MASTER_KEY")
-    
     if not MASTER_KEY:
-        st.error("MASTER_KEY belum disetting di .streamlit/secrets.toml")
+        st.error("Set MASTER_KEY di secrets.toml")
         st.stop()
 
-    st.subheader("🔒 Verifikasi Admin Utama")
-    st.warning("Halaman ini hanya untuk Super Admin (Pengurus Pusat/IT).")
+    st.subheader("🔒 Login Super Admin")
     
     with st.form("auth_form"):
-        master_key_input = st.text_input("Masukkan Master Key:", type="password")
-        submitted = st.form_submit_button("Verifikasi", type="primary")
-        
-        if submitted:
-            if master_key_input == MASTER_KEY:
+        # Tambahkan key unik agar state tidak nyangkut
+        mk_input = st.text_input("Master Key:", type="password", key="mk_input_field")
+        if st.form_submit_button("Masuk"):
+            if mk_input == MASTER_KEY:
                 st.session_state.master_auth_ok = True
-                st.success("Akses diterima!")
-                time.sleep(1)
                 st.rerun()
             else:
-                st.error("Master Key salah.")
+                st.error("Kunci salah.")
 
 # --------------------
-# FUNGSI DATA USER
+# LOGIC ADMIN
 # --------------------
-def fetch_user_list(_engine: Engine):
-    try:
-        query = text("""
-            SELECT id, username, cabang, 
-                   COALESCE(to_char(created_at, 'YYYY-MM-DD HH24:MI'), '-') as created_at 
-            FROM pwh.users 
-            ORDER BY username ASC
-        """)
-        with _engine.connect() as conn:
-            df = pd.read_sql(query, conn)
-        return df
-    except Exception as e:
-        st.error(f"Gagal memuat data user: {e}")
-        return pd.DataFrame()
+def fetch_users(_engine):
+    with _engine.connect() as conn:
+        return pd.read_sql(text("SELECT id, username, cabang, created_at FROM pwh.users ORDER BY username"), conn)
 
-def update_user_password(_engine: Engine, username: str, new_password: str):
-    try:
-        hashed = hash_safe(new_password)
-        
-        with _engine.begin() as conn:
-            conn.execute(
-                text("UPDATE pwh.users SET hashed_password = :p WHERE username = :u"),
-                {"p": hashed, "u": username},
-            )
-        st.toast(f"Password '{username}' berhasil diubah!", icon="✅")
-        time.sleep(1)
-    except Exception as e:
-        st.error(f"Gagal update: {e}")
-
-def delete_user(_engine: Engine, username: str):
-    try:
-        with _engine.begin() as conn:
-            conn.execute(text("DELETE FROM pwh.users WHERE username = :u"), {"u": username})
-        st.toast(f"User '{username}' dihapus!", icon="🗑️")
-        time.sleep(1)
-    except Exception as e:
-        st.error(f"Gagal hapus: {e}")
-
-# --------------------
-# HALAMAN ADMIN
-# --------------------
 def admin_page():
-    # Header & Logout
-    c1, c2 = st.columns([3, 1])
-    with c1:
-        st.success("✅ Login sebagai Super Admin")
-    with c2:
-        if st.button("Logout"):
-            st.session_state.master_auth_ok = False
-            st.session_state.show_form = False
-            st.rerun()
+    st.write(f"Login: Super Admin")
+    if st.button("Logout"):
+        st.session_state.master_auth_ok = False
+        st.rerun()
 
-    tab1, tab2 = st.tabs(["➕ Buat User Baru", "📋 Daftar User"])
+    tab1, tab2 = st.tabs(["➕ Tambah User", "📋 List User"])
 
-    # === TAB 1: FORM USER BARU ===
+    # TAB 1: TAMBAH USER
     with tab1:
-        st.info("Buat akun untuk admin cabang/wilayah agar bisa mengakses aplikasi input.")
-        cabang_options = fetch_cabang_list(DB_ENGINE)
-
-        with st.form("create_user_form", clear_on_submit=True):
-            col_u, col_c = st.columns(2)
-            with col_u:
-                username_input = st.text_input("Username (Tanpa Spasi)")
-            with col_c:
-                cabang = st.selectbox("Wilayah Cabang", options=cabang_options)
+        cabangs = fetch_cabang_list(DB_ENGINE)
+        with st.form("add_user"):
+            u = st.text_input("Username").strip()
+            c = st.selectbox("Cabang", cabangs)
+            p = st.text_input("Password", type="password").strip()
             
-            password_input = st.text_input("Password", type="password", help="Password aman (panjang bebas)")
-            
-            submitted = st.form_submit_button("Simpan User Baru", type="primary")
-
-            if submitted:
-                # Sanitasi Awal
-                username = username_input.strip() if username_input else ""
-                password = password_input.strip() if password_input else ""
-
-                # Validasi
-                if not username or not password or not cabang:
-                    st.error("Username, Password, dan Cabang wajib diisi.")
-                elif len(password) < 6:
-                    st.error("Password minimal 6 karakter.")
-                elif " " in username:
-                    st.error("Username tidak boleh mengandung spasi.")
-                else:
-                    # Proses Simpan
+            if st.form_submit_button("Simpan"):
+                if u and c and len(p) >= 6:
                     try:
-                        hashed_password = hash_safe(password)
-                        
+                        # Hash password dengan PBKDF2
+                        h = hash_safe(p)
                         with DB_ENGINE.begin() as conn:
-                            query = text("""
-                                INSERT INTO pwh.users (username, hashed_password, cabang)
-                                VALUES (:user, :pass, :branch)
-                            """)
-                            conn.execute(query, {"user": username.lower(), "pass": hashed_password, "branch": cabang})
-                        
-                        st.success(f"User '{username}' berhasil dibuat untuk cabang '{cabang}'!")
-                        st.cache_data.clear() 
+                            conn.execute(
+                                text("INSERT INTO pwh.users (username, hashed_password, cabang) VALUES (:u, :h, :c)"),
+                                {"u": u.lower(), "h": h, "c": c}
+                            )
+                        st.success(f"Sukses: {u}")
+                        time.sleep(1)
+                        st.rerun()
                     except IntegrityError:
-                        st.error(f"Username '{username}' sudah terpakai. Gunakan username lain.")
+                        st.error("Username sudah ada.")
                     except Exception as e:
-                        st.error(f"Error database: {e}")
+                        st.error(f"Error: {e}")
+                else:
+                    st.warning("Isi semua data. Password min 6 char.")
 
-    # === TAB 2: DAFTAR USER ===
+    # TAB 2: LIST USER
     with tab2:
-        st.subheader("Daftar Pengguna Aktif")
+        if st.button("Refresh"): st.rerun()
         
-        if st.button("🔄 Refresh Data"):
-            st.cache_data.clear()
-            st.rerun()
-
-        df_users = fetch_user_list(DB_ENGINE)
-
-        if df_users.empty:
-            st.warning("Belum ada data user.")
-        else:
-            for i, row in df_users.iterrows():
-                with st.expander(f"👤 {row.username} | 📍 {row.cabang}"):
-                    st.caption(f"Dibuat pada: {row.created_at}")
+        try:
+            df = fetch_users(DB_ENGINE)
+            for _, row in df.iterrows():
+                with st.expander(f"{row['username']} ({row['cabang']})"):
+                    # Fitur Reset Password
+                    new_p = st.text_input("Password Baru", key=f"p_{row['id']}", type="password").strip()
+                    if st.button("Update Password", key=f"btn_{row['id']}"):
+                        if len(new_p) >= 6:
+                            h = hash_safe(new_p)
+                            with DB_ENGINE.begin() as conn:
+                                conn.execute(text("UPDATE pwh.users SET hashed_password = :h WHERE username = :u"), {"h": h, "u": row['username']})
+                            st.toast("Password diupdate!")
+                        else:
+                            st.error("Min 6 karakter")
                     
-                    c_pass, c_act = st.columns([2, 1])
-                    
-                    with c_pass:
-                        new_pw_input = st.text_input("Reset Password:", key=f"pw_{row.id}", type="password", placeholder="Isi jika ingin mengganti")
-                        
-                        if st.button("Simpan Password Baru", key=f"btn_up_{row.id}"):
-                            new_pw = new_pw_input.strip() if new_pw_input else ""
-                            
-                            if len(new_pw) >= 6:
-                                update_user_password(DB_ENGINE, row.username, new_pw)
-                                st.rerun()
-                            else:
-                                st.error("Min 6 karakter")
-                    
-                    with c_act:
-                        st.write("Area Berbahaya")
-                        if st.button("Hapus User", key=f"btn_del_{row.id}", type="primary"):
-                            delete_user(DB_ENGINE, row.username)
-                            st.rerun()
+                    # Fitur Hapus
+                    st.write("---")
+                    if st.button("Hapus User", key=f"del_{row['id']}", type="primary"):
+                        with DB_ENGINE.begin() as conn:
+                            conn.execute(text("DELETE FROM pwh.users WHERE username = :u"), {"u": row['username']})
+                        st.rerun()
+        except Exception as e:
+            st.error(f"Gagal load data: {e}")
 
-# --------------------
-# MAIN LOGIC FLOW
-# --------------------
+# MAIN
 if not st.session_state.master_auth_ok:
     check_master_key()
 else:
