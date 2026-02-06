@@ -52,34 +52,14 @@ DB_URL = _resolve_db_url()
 DB_ENGINE = get_engine(DB_URL)
 
 # --------------------
-# KEAMANAN PASSWORD (VERSI FINAL & STABIL)
+# KEAMANAN PASSWORD (SOLUSI TERBAIK)
 # --------------------
+# Menggunakan bcrypt_sha256 otomatis mengatasi limit 72 bytes
+# 'bcrypt' disertakan agar password lama (jika ada) tetap valid
 pwd_context = CryptContext(
-    schemes=["bcrypt_sha256"],
+    schemes=["bcrypt_sha256", "bcrypt"], 
     deprecated="auto"
 )
-
-def hash_safe(password: str) -> str:
-    """
-    Fungsi ini menjamin password aman dari error '72 bytes limit'.
-    Logic: String -> Encode Bytes -> Potong -> Decode String -> Hash
-    """
-    try:
-        # 1. Ubah ke bytes
-        b_pwd = password.encode('utf-8')
-        
-        # 2. Jika kepanjangan, potong jadi 72 bytes
-        if len(b_pwd) > 72:
-            b_pwd = b_pwd[:72]
-        
-        # 3. KEMBALIKAN KE STRING (Ini kunci agar tidak error seperti sebelumnya)
-        # errors='ignore' mencegah error jika pemotongan merusak karakter emoji/simbol
-        safe_string = b_pwd.decode('utf-8', errors='ignore')
-        
-        return pwd_context.hash(safe_string)
-    except Exception as e:
-        # Fallback jika terjadi anomali, hash input aslinya saja
-        return pwd_context.hash(password)
 
 # --------------------
 # DATA CABANG
@@ -140,8 +120,8 @@ def fetch_user_list(_engine: Engine):
 
 def update_user_password(_engine: Engine, username: str, new_password: str):
     try:
-        # MENGGUNAKAN HASH SAFE (AMAN)
-        hashed = hash_safe(new_password)
+        # Langsung hash, library akan menangani pre-hashing SHA256
+        hashed = pwd_context.hash(new_password)
         
         with _engine.begin() as conn:
             conn.execute(
@@ -166,7 +146,6 @@ def delete_user(_engine: Engine, username: str):
 # HALAMAN ADMIN
 # --------------------
 def admin_page():
-    # Header & Logout
     c1, c2 = st.columns([3, 1])
     with c1:
         st.success("✅ Login sebagai Super Admin")
@@ -190,13 +169,12 @@ def admin_page():
             with col_c:
                 cabang = st.selectbox("Wilayah Cabang", options=cabang_options)
             
-            # UI Restriction: Visual feedback ke user
-            password = st.text_input("Password", type="password", max_chars=72, help="Maksimal 72 karakter")
+            # Tidak perlu max_chars 72 lagi karena bcrypt_sha256 bisa handle panjang
+            password = st.text_input("Password", type="password")
             
             submitted = st.form_submit_button("Simpan User Baru", type="primary")
 
             if submitted:
-                # Validasi
                 if not username or not password or not cabang:
                     st.error("Username, Password, dan Cabang wajib diisi.")
                 elif len(password) < 6:
@@ -204,10 +182,9 @@ def admin_page():
                 elif " " in username:
                     st.error("Username tidak boleh mengandung spasi.")
                 else:
-                    # Proses Simpan
                     try:
-                        # MENGGUNAKAN HASH SAFE (AMAN)
-                        hashed_password = hash_safe(password)
+                        # Langsung hash
+                        hashed_password = pwd_context.hash(password)
                         
                         with DB_ENGINE.begin() as conn:
                             query = text("""
@@ -237,23 +214,18 @@ def admin_page():
             st.warning("Belum ada data user.")
         else:
             for i, row in df_users.iterrows():
-                # Card style layout
                 with st.expander(f"👤 {row.username} | 📍 {row.cabang}"):
                     st.caption(f"Dibuat pada: {row.created_at}")
                     
                     c_pass, c_act = st.columns([2, 1])
-                    
                     with c_pass:
-                        # UI Restriction
-                        new_pw = st.text_input("Reset Password:", key=f"pw_{row.id}", type="password", placeholder="Isi jika ingin mengganti", max_chars=72)
-                        
+                        new_pw = st.text_input("Reset Password:", key=f"pw_{row.id}", type="password", placeholder="Isi jika ingin mengganti")
                         if st.button("Simpan Password Baru", key=f"btn_up_{row.id}"):
                             if len(new_pw) >= 6:
                                 update_user_password(DB_ENGINE, row.username, new_pw)
                                 st.rerun()
                             else:
                                 st.error("Min 6 karakter")
-                    
                     with c_act:
                         st.write("Area Berbahaya")
                         if st.button("Hapus User", key=f"btn_del_{row.id}", type="primary"):
@@ -267,4 +239,3 @@ if not st.session_state.master_auth_ok:
     check_master_key()
 else:
     admin_page()
-
