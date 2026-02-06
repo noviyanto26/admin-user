@@ -128,8 +128,8 @@ def admin_dashboard():
 
     st.divider()
 
-    # Tabs UI
-    tab_create, tab_list = st.tabs(["➕ Buat User Baru", "📋 Daftar User Aktif"])
+    # Tabs UI (DITAMBAHKAN TAB DEBUG)
+    tab_create, tab_list, tab_debug = st.tabs(["➕ Buat User Baru", "📋 Daftar User Aktif", "🔍 Debug / Test Login"])
 
     # === TAB 1: FORM BUAT USER ===
     with tab_create:
@@ -204,7 +204,6 @@ def admin_dashboard():
                         # Bagian Delete
                         with c_delete:
                             st.markdown("**Zona Bahaya**")
-                            # Gunakan popover atau konfirmasi sederhana
                             if st.button("🗑️ Hapus Akun", key=f"btn_del_{row.id}", type="primary"):
                                 delete_user_db(row.username)
                                 st.toast(f"User {row.username} dihapus!", icon="🗑️")
@@ -213,6 +212,46 @@ def admin_dashboard():
                                 
         except Exception as e:
             st.error(f"Gagal memuat data: {e}")
+
+    # === TAB 3: DEBUG LOGING (DITAMBAHKAN) ===
+    with tab_debug:
+        st.warning("🛠️ Fitur ini hanya untuk testing verifikasi password (Debugging).")
+        
+        d_user = st.text_input("Test Username", key="d_user")
+        d_pass = st.text_input("Test Password", key="d_pass", type="password")
+        
+        if st.button("Test Login Check"):
+            with DB_ENGINE.connect() as conn:
+                # Ambil data user dari DB
+                query = text("SELECT username, hashed_password FROM pwh.users WHERE username = :u")
+                result = conn.execute(query, {"u": d_user.strip()})
+                user_data = result.mappings().fetchone()
+            
+            if not user_data:
+                st.error("User tidak ditemukan di database.")
+            else:
+                st.info("User ditemukan, memulai pengecekan...")
+                
+                # --- MULAI KODE DEBUG REQUEST ANDA ---
+                password = d_pass # Mengambil input dari form diatas
+                
+                password_to_check = password  # atau variabel apapun yang Anda masukkan
+                
+                # --- DEBUGGING SEMENTARA ---
+                st.write(f"String yang dicek: {password_to_check}")
+                st.write(f"Panjang karakter: {len(password_to_check)}")
+                st.write(f"Tipe data: {type(password_to_check)}")
+                
+                # Tampilkan Hash dari DB juga untuk perbandingan
+                st.code(f"Hash di DB: {user_data['hashed_password']}")
+                # ---------------------------
+
+                if pwd_context.verify(password_to_check, user_data['hashed_password']):
+                    st.success("✅ PASSWORD COCOK / VALID!")
+                    st.balloons()
+                else:
+                    st.error("❌ PASSWORD SALAH / TIDAK COCOK!")
+                # --- AKHIR KODE DEBUG ---
 
 # --------------------
 # MAIN EXECUTION
