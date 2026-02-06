@@ -15,6 +15,7 @@ st.set_page_config(
     layout="centered"
 )
 
+# Init Session State
 if "master_auth_ok" not in st.session_state:
     st.session_state.master_auth_ok = False
 
@@ -40,22 +41,11 @@ def get_engine(dsn: str) -> Engine:
 
 DB_ENGINE = get_engine(_resolve_db_url())
 
-# SECURITY: PENGATURAN PASSLIB YANG BENAR
-# Kita gunakan 'bcrypt_sha256'. 
-# Skema ini MENGIZINKAN Anda mengirim password plain text sepanjang apapun.
-# Passlib akan mengurus sisanya secara otomatis.
-pwd_context = CryptContext(
-    schemes=["bcrypt_sha256", "pbkdf2_sha256"], 
-    default="bcrypt_sha256", 
-    deprecated="auto"
-)
+# SECURITY: Menggunakan PBKDF2 (Aman & Tidak ada limit 72 bytes)
+pwd_context = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
 
 def hash_safe(password: str) -> str:
-    """
-    Fungsi ini menerima PLAIN TEXT.
-    Tidak ada hashing manual disini. Langsung serahkan ke passlib.
-    """
-    # .strip() hanya membuang spasi tidak sengaja di awal/akhir
+    """Hashing aman tanpa limit panjang karakter."""
     return pwd_context.hash(password.strip())
 
 # --------------------
@@ -68,7 +58,7 @@ def fetch_cabang_list() -> list:
             df = pd.read_sql(text("SELECT DISTINCT cabang FROM pwh.hmhi_cabang ORDER BY cabang"), conn)
         return [""] + df["cabang"].dropna().tolist()
     except:
-        return ["", "Pusat", "Jawa Barat", "DKI Jakarta"] 
+        return ["", "Pusat", "Jawa Barat", "DKI Jakarta"] # Fallback
 
 def fetch_users():
     query = """
@@ -80,8 +70,6 @@ def fetch_users():
         return pd.read_sql(text(query), conn)
 
 def add_user_to_db(username, password, cabang):
-    # INPUT: password (plain text dari form)
-    # PROSES: Langsung masuk ke hash_safe -> passlib
     hashed = hash_safe(password)
     with DB_ENGINE.begin() as conn:
         conn.execute(
@@ -90,7 +78,6 @@ def add_user_to_db(username, password, cabang):
         )
 
 def update_password_db(username, new_password):
-    # INPUT: new_password (plain text)
     hashed = hash_safe(new_password)
     with DB_ENGINE.begin() as conn:
         conn.execute(
@@ -134,31 +121,33 @@ def admin_dashboard():
         st.title("🛡️ Manajemen User")
         st.caption("Kelola akun admin wilayah untuk Registry Hemofilia Indonesia")
     with c2:
-        st.write("") 
+        st.write("") # Spacer
         if st.button("Logout 🚪", use_container_width=True):
             st.session_state.master_auth_ok = False
             st.rerun()
 
     st.divider()
 
-    tab_create, tab_list, tab_debug = st.tabs(["➕ Buat User Baru", "📋 Daftar User Aktif", "🔍 Debug / Test Login"])
+    # Tabs UI
+    tab_create, tab_list = st.tabs(["➕ Buat User Baru", "📋 Daftar User Aktif"])
 
     # === TAB 1: FORM BUAT USER ===
     with tab_create:
         st.markdown("##### Input Data Admin Baru")
+        
         with st.container(border=True):
             with st.form("add_user_form", clear_on_submit=True):
                 col_a, col_b = st.columns(2)
                 with col_a:
-                    u_input = st.text_input("Username", placeholder="misal: admin_jabar")
+                    u_input = st.text_input("Username", placeholder="misal: admin_jabar", help="Gunakan huruf kecil tanpa spasi")
                 with col_b:
                     c_input = st.selectbox("Wilayah Cabang", fetch_cabang_list())
                 
-                # INI ADALAH INPUT PLAIN TEXT
                 p_input = st.text_input("Password", type="password", placeholder="Minimal 6 karakter")
                 
                 st.write("")
                 if st.form_submit_button("Simpan User", type="primary", use_container_width=True):
+                    # Validasi
                     u, p = u_input.strip(), p_input.strip()
                     if not u or not p or not c_input:
                         st.warning("⚠️ Semua kolom wajib diisi.")
@@ -168,14 +157,12 @@ def admin_dashboard():
                         st.warning("⚠️ Username tidak boleh ada spasi.")
                     else:
                         try:
-                            # Variabel 'p' disini masih PLAIN TEXT ("4c3h-1#")
-                            # Dikirim ke fungsi add_user_to_db apa adanya
                             add_user_to_db(u, p, c_input)
-                            st.success(f"✅ User **{u}** berhasil dibuat.")
-                            st.cache_data.clear()
+                            st.success(f"✅ Sukses! User **{u}** untuk cabang **{c_input}** berhasil dibuat.")
+                            st.cache_data.clear() # Clear cache agar list update
                             time.sleep(1.5)
                         except IntegrityError:
-                            st.error(f"⛔ Username **{u}** sudah terpakai.")
+                            st.error(f"⛔ Username **{u}** sudah terpakai. Coba yang lain.")
                         except Exception as e:
                             st.error(f"Error sistem: {e}")
 
@@ -195,67 +182,41 @@ def admin_dashboard():
                 st.info("Belum ada data user.")
             else:
                 for idx, row in df_users.iterrows():
+                    # Expander Styling
                     with st.expander(f"👤 **{row.username}** (📍 {row.cabang})"):
                         st.caption(f"📅 Dibuat pada: {row.tgl_dibuat}")
+                        
+                        # Layout dalam expander
                         c_reset, c_delete = st.columns([2, 1])
                         
+                        # Bagian Reset Password
                         with c_reset:
                             st.markdown("**Ganti Password**")
-                            # INPUT PLAIN TEXT
-                            new_pw = st.text_input("Password Baru", key=f"pw_{row.id}", type="password", label_visibility="collapsed")
+                            new_pw = st.text_input("Password Baru", key=f"pw_{row.id}", type="password", label_visibility="collapsed", placeholder="Ketik password baru...")
                             if st.button("Update Password", key=f"btn_up_{row.id}"):
                                 clean_pw = new_pw.strip()
                                 if len(clean_pw) >= 6:
-                                    # Dikirim PLAIN TEXT ke fungsi
                                     update_password_db(row.username, clean_pw)
                                     st.toast(f"Password {row.username} berhasil diubah!", icon="✅")
                                 else:
-                                    st.toast("Gagal: Password pendek.", icon="⚠️")
+                                    st.toast("Gagal: Password minimal 6 karakter.", icon="⚠️")
 
+                        # Bagian Delete
                         with c_delete:
                             st.markdown("**Zona Bahaya**")
+                            # Gunakan popover atau konfirmasi sederhana
                             if st.button("🗑️ Hapus Akun", key=f"btn_del_{row.id}", type="primary"):
                                 delete_user_db(row.username)
                                 st.toast(f"User {row.username} dihapus!", icon="🗑️")
                                 time.sleep(1)
-                                st.rerun()    
+                                st.rerun()
+                                
         except Exception as e:
             st.error(f"Gagal memuat data: {e}")
 
-    # === TAB 3: DEBUG LOGIN ===
-    with tab_debug:
-        st.warning("🛠️ Fitur ini hanya untuk testing verifikasi password.")
-        d_user = st.text_input("Test Username", key="d_user")
-        
-        # INI INPUT PLAIN TEXT ("4c3h-1#")
-        d_pass = st.text_input("Test Password", key="d_pass", type="password")
-        
-        if st.button("Test Login Check"):
-            with DB_ENGINE.connect() as conn:
-                query = text("SELECT username, hashed_password FROM pwh.users WHERE username = :u")
-                result = conn.execute(query, {"u": d_user.strip()})
-                user_data = result.mappings().fetchone()
-            
-            if not user_data:
-                st.error("User tidak ditemukan.")
-            else:
-                st.info("User ditemukan, mengecek password...")
-                
-                # --- VERIFIKASI LANGSUNG (PLAIN TEXT) ---
-                # Kita tidak melakukan apa-apa pada variabel d_pass.
-                # Kita kirim langsung "4c3h-1#" ke fungsi verify.
-                # Passlib 'bcrypt_sha256' akan mengurus sisanya.
-                
-                plain_password = d_pass.strip()
-                
-                st.write(f"Password yang dicek (Plain): `{plain_password}`")
-                
-                if pwd_context.verify(plain_password, user_data['hashed_password']):
-                    st.success("✅ PASSWORD COCOK / VALID!")
-                    st.balloons()
-                else:
-                    st.error("❌ PASSWORD SALAH.")
-
+# --------------------
+# MAIN EXECUTION
+# --------------------
 if __name__ == "__main__":
     if not st.session_state.master_auth_ok:
         check_master_key()
