@@ -5,7 +5,6 @@ import streamlit as st
 from sqlalchemy import create_engine, text, Engine
 from sqlalchemy.exc import IntegrityError
 from passlib.context import CryptContext
-import hashlib
 
 # --------------------
 # INIT SESSION STATE
@@ -53,40 +52,21 @@ DB_URL = _resolve_db_url()
 DB_ENGINE = get_engine(DB_URL)
 
 # --------------------
-# KEAMANAN PASSWORD (PERBAIKAN UTAMA DI SINI)
+# KEAMANAN PASSWORD (PERBAIKAN)
 # --------------------
-# Mengubah scheme menjadi 'bcrypt_sha256' untuk mengatasi limit 72 bytes
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+# Menggunakan 'bcrypt_sha256' untuk mengatasi limit 72 bytes secara otomatis
+pwd_context = CryptContext(schemes=["bcrypt_sha256"], deprecated="auto")
 
 def hash_safe(password: str) -> str:
     """
-    Solusi Anti-Gagal:
-    1. Password (berapapun panjangnya) diubah dulu menjadi SHA256 (64 karakter fixed).
-    2. Hasil SHA256 tersebut baru di-hash dengan Bcrypt.
-    Ini MENJAMIN panjang input bcrypt tidak akan pernah lebih dari 72 bytes.
+    Melakukan hashing password.
+    Input sudah dipastikan string bersih (di-strip di UI).
+    Passlib dengan bcrypt_sha256 akan otomatis menangani panjang password.
     """
     try:
-        # Pastikan input bersih
-        password = password.strip()
-        
-        # LANGKAH 1: Pre-hashing SHA256
-        # Hasilnya adalah string hex sepanjang 64 karakter (angka & huruf a-f)
-        sha_signature = hashlib.sha256(password.encode('utf-8')).hexdigest()
-        
-        # LANGKAH 2: Bcrypt Hashing
-        return pwd_context.hash(sha_signature)
+        return pwd_context.hash(password)
     except Exception as e:
         raise ValueError(f"Gagal melakukan hashing: {e}")
-
-# PENTING: Jika Anda punya fungsi verifikasi login di file lain,
-# Anda harus mengubah cara verifikasinya agar cocok.
-def verify_password_safe(plain_password: str, hashed_password: str) -> bool:
-    try:
-        # Lakukan pre-hash yang sama sebelum verifikasi
-        sha_signature = hashlib.sha256(plain_password.strip().encode('utf-8')).hexdigest()
-        return pwd_context.verify(sha_signature, hashed_password)
-    except Exception:
-        return False
 
 # --------------------
 # DATA CABANG
@@ -147,8 +127,6 @@ def fetch_user_list(_engine: Engine):
 
 def update_user_password(_engine: Engine, username: str, new_password: str):
     try:
-        # PERBAIKAN: Gunakan fungsi hash_safe dengan input bersih
-        # Strip dilakukan di UI atau disini sebagai double safety
         hashed = hash_safe(new_password)
         
         with _engine.begin() as conn:
@@ -198,15 +176,15 @@ def admin_page():
             with col_c:
                 cabang = st.selectbox("Wilayah Cabang", options=cabang_options)
             
-            # PERBAIKAN: Hapus max_chars 72 karena sekarang support unlimited
-            password_input = st.text_input("Password", type="password", help="Panjang password bebas")
+            # PERBAIKAN: Hapus batasan max_chars karena bcrypt_sha256 aman untuk password panjang
+            password_input = st.text_input("Password", type="password", help="Password aman (panjang bebas)")
             
             submitted = st.form_submit_button("Simpan User Baru", type="primary")
 
             if submitted:
-                # Sanitasi Input
-                username = username_input.strip()
-                password = password_input.strip()
+                # PERBAIKAN: Sanitasi Input (Strip)
+                username = username_input.strip() if username_input else ""
+                password = password_input.strip() if password_input else ""
 
                 # Validasi
                 if not username or not password or not cabang:
@@ -254,11 +232,12 @@ def admin_page():
                     c_pass, c_act = st.columns([2, 1])
                     
                     with c_pass:
-                        # PERBAIKAN: Sanitasi strip() saat ambil value
+                        # PERBAIKAN: Input reset password
                         new_pw_input = st.text_input("Reset Password:", key=f"pw_{row.id}", type="password", placeholder="Isi jika ingin mengganti")
                         
                         if st.button("Simpan Password Baru", key=f"btn_up_{row.id}"):
-                            new_pw = new_pw_input.strip()
+                            # PERBAIKAN: Sanitasi Input
+                            new_pw = new_pw_input.strip() if new_pw_input else ""
                             
                             if len(new_pw) >= 6:
                                 update_user_password(DB_ENGINE, row.username, new_pw)
@@ -279,4 +258,3 @@ if not st.session_state.master_auth_ok:
     check_master_key()
 else:
     admin_page()
-
