@@ -54,16 +54,18 @@ DB_ENGINE = get_engine(DB_URL)
 # --------------------
 # KEAMANAN PASSWORD (PERBAIKAN UTAMA DI SINI)
 # --------------------
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+# Mengubah scheme menjadi 'bcrypt_sha256' untuk mengatasi limit 72 bytes
+pwd_context = CryptContext(schemes=["bcrypt_sha256"], deprecated="auto")
 
 def hash_safe(password: str) -> str:
     """
-    Mengamankan hashing password untuk menghindari error 'longer than 72 bytes'.
-    Bcrypt membatasi input max 72 bytes. Kita truncate bytes-nya agar aman.
+    Mengamankan hashing password.
+    Menggunakan bcrypt_sha256 otomatis menangani password panjang (>72 bytes)
+    dengan melakukan pre-hash SHA256 sebelum masuk ke bcrypt.
     """
     try:
-        # Encode ke utf-8 bytes, ambil 72 bytes pertama, lalu hash
-        return pwd_context.hash(password.encode('utf-8')[:72])
+        # Tidak perlu lagi encode manual atau truncate [:72]
+        return pwd_context.hash(password)
     except Exception as e:
         raise ValueError(f"Gagal melakukan hashing: {e}")
 
@@ -126,7 +128,8 @@ def fetch_user_list(_engine: Engine):
 
 def update_user_password(_engine: Engine, username: str, new_password: str):
     try:
-        # PERBAIKAN: Gunakan fungsi hash_safe
+        # PERBAIKAN: Gunakan fungsi hash_safe dengan input bersih
+        # Strip dilakukan di UI atau disini sebagai double safety
         hashed = hash_safe(new_password)
         
         with _engine.begin() as conn:
@@ -172,16 +175,20 @@ def admin_page():
         with st.form("create_user_form", clear_on_submit=True):
             col_u, col_c = st.columns(2)
             with col_u:
-                username = st.text_input("Username (Tanpa Spasi)")
+                username_input = st.text_input("Username (Tanpa Spasi)")
             with col_c:
                 cabang = st.selectbox("Wilayah Cabang", options=cabang_options)
             
-            # PERBAIKAN: Tambahkan max_chars visual
-            password = st.text_input("Password", type="password", max_chars=72, help="Maksimal 72 karakter")
+            # PERBAIKAN: Hapus max_chars 72 karena sekarang support unlimited
+            password_input = st.text_input("Password", type="password", help="Panjang password bebas")
             
             submitted = st.form_submit_button("Simpan User Baru", type="primary")
 
             if submitted:
+                # Sanitasi Input
+                username = username_input.strip()
+                password = password_input.strip()
+
                 # Validasi
                 if not username or not password or not cabang:
                     st.error("Username, Password, dan Cabang wajib diisi.")
@@ -192,7 +199,6 @@ def admin_page():
                 else:
                     # Proses Simpan
                     try:
-                        # PERBAIKAN: Gunakan fungsi hash_safe
                         hashed_password = hash_safe(password)
                         
                         with DB_ENGINE.begin() as conn:
@@ -229,10 +235,12 @@ def admin_page():
                     c_pass, c_act = st.columns([2, 1])
                     
                     with c_pass:
-                        # PERBAIKAN: Tambahkan max_chars visual
-                        new_pw = st.text_input("Reset Password:", key=f"pw_{row.id}", type="password", placeholder="Isi jika ingin mengganti", max_chars=72)
+                        # PERBAIKAN: Sanitasi strip() saat ambil value
+                        new_pw_input = st.text_input("Reset Password:", key=f"pw_{row.id}", type="password", placeholder="Isi jika ingin mengganti")
                         
                         if st.button("Simpan Password Baru", key=f"btn_up_{row.id}"):
+                            new_pw = new_pw_input.strip()
+                            
                             if len(new_pw) >= 6:
                                 update_user_password(DB_ENGINE, row.username, new_pw)
                                 st.rerun()
