@@ -52,20 +52,31 @@ DB_URL = _resolve_db_url()
 DB_ENGINE = get_engine(DB_URL)
 
 # --------------------
-# KEAMANAN PASSWORD (PERBAIKAN UTAMA DI SINI)
+# KEAMANAN PASSWORD (VERSI FINAL & STABIL)
 # --------------------
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 def hash_safe(password: str) -> str:
     """
-    Mengamankan hashing password untuk menghindari error 'longer than 72 bytes'.
-    Bcrypt membatasi input max 72 bytes. Kita truncate bytes-nya agar aman.
+    Fungsi ini menjamin password aman dari error '72 bytes limit'.
+    Logic: String -> Encode Bytes -> Potong -> Decode String -> Hash
     """
     try:
-        # Encode ke utf-8 bytes, ambil 72 bytes pertama, lalu hash
-        return pwd_context.hash(password.encode('utf-8')[:72])
+        # 1. Ubah ke bytes
+        b_pwd = password.encode('utf-8')
+        
+        # 2. Jika kepanjangan, potong jadi 72 bytes
+        if len(b_pwd) > 72:
+            b_pwd = b_pwd[:72]
+        
+        # 3. KEMBALIKAN KE STRING (Ini kunci agar tidak error seperti sebelumnya)
+        # errors='ignore' mencegah error jika pemotongan merusak karakter emoji/simbol
+        safe_string = b_pwd.decode('utf-8', errors='ignore')
+        
+        return pwd_context.hash(safe_string)
     except Exception as e:
-        raise ValueError(f"Gagal melakukan hashing: {e}")
+        # Fallback jika terjadi anomali, hash input aslinya saja
+        return pwd_context.hash(password)
 
 # --------------------
 # DATA CABANG
@@ -126,7 +137,7 @@ def fetch_user_list(_engine: Engine):
 
 def update_user_password(_engine: Engine, username: str, new_password: str):
     try:
-        # PERBAIKAN: Gunakan fungsi hash_safe
+        # MENGGUNAKAN HASH SAFE (AMAN)
         hashed = hash_safe(new_password)
         
         with _engine.begin() as conn:
@@ -176,7 +187,7 @@ def admin_page():
             with col_c:
                 cabang = st.selectbox("Wilayah Cabang", options=cabang_options)
             
-            # PERBAIKAN: Tambahkan max_chars visual
+            # UI Restriction: Visual feedback ke user
             password = st.text_input("Password", type="password", max_chars=72, help="Maksimal 72 karakter")
             
             submitted = st.form_submit_button("Simpan User Baru", type="primary")
@@ -192,7 +203,7 @@ def admin_page():
                 else:
                     # Proses Simpan
                     try:
-                        # PERBAIKAN: Gunakan fungsi hash_safe
+                        # MENGGUNAKAN HASH SAFE (AMAN)
                         hashed_password = hash_safe(password)
                         
                         with DB_ENGINE.begin() as conn:
@@ -223,13 +234,14 @@ def admin_page():
             st.warning("Belum ada data user.")
         else:
             for i, row in df_users.iterrows():
+                # Card style layout
                 with st.expander(f"👤 {row.username} | 📍 {row.cabang}"):
                     st.caption(f"Dibuat pada: {row.created_at}")
                     
                     c_pass, c_act = st.columns([2, 1])
                     
                     with c_pass:
-                        # PERBAIKAN: Tambahkan max_chars visual
+                        # UI Restriction
                         new_pw = st.text_input("Reset Password:", key=f"pw_{row.id}", type="password", placeholder="Isi jika ingin mengganti", max_chars=72)
                         
                         if st.button("Simpan Password Baru", key=f"btn_up_{row.id}"):
