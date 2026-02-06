@@ -41,11 +41,21 @@ def get_engine(dsn: str) -> Engine:
 
 DB_ENGINE = get_engine(_resolve_db_url())
 
-# SECURITY: Menggunakan PBKDF2 (Aman & Tidak ada limit 72 bytes)
-pwd_context = CryptContext(schemes=["pbkdf2_sha256"], deprecated="auto")
+# SECURITY: KEMBALI KE BCRYPT-SHA256
+# Skema 'bcrypt_sha256' di passlib otomatis menangani password panjang (>72 char)
+# dengan cara memadatkan input menggunakan SHA256 sebelum masuk ke Bcrypt.
+# Kita tambahkan 'pbkdf2_sha256' di list agar hash lama (jika ada) tetap terbaca.
+pwd_context = CryptContext(
+    schemes=["bcrypt_sha256", "pbkdf2_sha256"], 
+    default="bcrypt_sha256", 
+    deprecated="auto"
+)
 
 def hash_safe(password: str) -> str:
-    """Hashing aman tanpa limit panjang karakter."""
+    """
+    Hashing menggunakan bcrypt-sha256. 
+    Input 'password' (plain) akan otomatis di-handle passlib.
+    """
     return pwd_context.hash(password.strip())
 
 # --------------------
@@ -128,7 +138,7 @@ def admin_dashboard():
 
     st.divider()
 
-    # Tabs UI (DITAMBAHKAN TAB DEBUG)
+    # Tabs UI
     tab_create, tab_list, tab_debug = st.tabs(["➕ Buat User Baru", "📋 Daftar User Aktif", "🔍 Debug / Test Login"])
 
     # === TAB 1: FORM BUAT USER ===
@@ -213,7 +223,7 @@ def admin_dashboard():
         except Exception as e:
             st.error(f"Gagal memuat data: {e}")
 
-    # === TAB 3: DEBUG LOGING (DITAMBAHKAN) ===
+    # === TAB 3: DEBUG LOGING ===
     with tab_debug:
         st.warning("🛠️ Fitur ini hanya untuk testing verifikasi password (Debugging).")
         
@@ -233,16 +243,15 @@ def admin_dashboard():
                 st.info("User ditemukan, memulai pengecekan...")
                 
                 # --- MULAI KODE DEBUG REQUEST ANDA ---
-                password = d_pass # Mengambil input dari form diatas
-                
-                password_to_check = password  # atau variabel apapun yang Anda masukkan
+                password = d_pass 
+                password_to_check = password
                 
                 # --- DEBUGGING SEMENTARA ---
                 st.write(f"String yang dicek: {password_to_check}")
                 st.write(f"Panjang karakter: {len(password_to_check)}")
                 st.write(f"Tipe data: {type(password_to_check)}")
                 
-                # Tampilkan Hash dari DB juga untuk perbandingan
+                # Tampilkan Hash dari DB
                 st.code(f"Hash di DB: {user_data['hashed_password']}")
                 # ---------------------------
 
