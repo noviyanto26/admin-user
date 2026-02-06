@@ -5,6 +5,7 @@ import streamlit as st
 from sqlalchemy import create_engine, text, Engine
 from sqlalchemy.exc import IntegrityError
 from passlib.context import CryptContext
+import hashlib
 
 # --------------------
 # INIT SESSION STATE
@@ -55,19 +56,37 @@ DB_ENGINE = get_engine(DB_URL)
 # KEAMANAN PASSWORD (PERBAIKAN UTAMA DI SINI)
 # --------------------
 # Mengubah scheme menjadi 'bcrypt_sha256' untuk mengatasi limit 72 bytes
-pwd_context = CryptContext(schemes=["bcrypt_sha256"], deprecated="auto")
+pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 def hash_safe(password: str) -> str:
     """
-    Mengamankan hashing password.
-    Menggunakan bcrypt_sha256 otomatis menangani password panjang (>72 bytes)
-    dengan melakukan pre-hash SHA256 sebelum masuk ke bcrypt.
+    Solusi Anti-Gagal:
+    1. Password (berapapun panjangnya) diubah dulu menjadi SHA256 (64 karakter fixed).
+    2. Hasil SHA256 tersebut baru di-hash dengan Bcrypt.
+    Ini MENJAMIN panjang input bcrypt tidak akan pernah lebih dari 72 bytes.
     """
     try:
-        # Tidak perlu lagi encode manual atau truncate [:72]
-        return pwd_context.hash(password)
+        # Pastikan input bersih
+        password = password.strip()
+        
+        # LANGKAH 1: Pre-hashing SHA256
+        # Hasilnya adalah string hex sepanjang 64 karakter (angka & huruf a-f)
+        sha_signature = hashlib.sha256(password.encode('utf-8')).hexdigest()
+        
+        # LANGKAH 2: Bcrypt Hashing
+        return pwd_context.hash(sha_signature)
     except Exception as e:
         raise ValueError(f"Gagal melakukan hashing: {e}")
+
+# PENTING: Jika Anda punya fungsi verifikasi login di file lain,
+# Anda harus mengubah cara verifikasinya agar cocok.
+def verify_password_safe(plain_password: str, hashed_password: str) -> bool:
+    try:
+        # Lakukan pre-hash yang sama sebelum verifikasi
+        sha_signature = hashlib.sha256(plain_password.strip().encode('utf-8')).hexdigest()
+        return pwd_context.verify(sha_signature, hashed_password)
+    except Exception:
+        return False
 
 # --------------------
 # DATA CABANG
@@ -260,3 +279,4 @@ if not st.session_state.master_auth_ok:
     check_master_key()
 else:
     admin_page()
+
