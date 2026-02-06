@@ -7,7 +7,7 @@ from sqlalchemy.exc import IntegrityError
 from passlib.context import CryptContext
 
 # --------------------
-# INIT SESSION STATE (Perbaikan Utama)
+# INIT SESSION STATE
 # --------------------
 if "master_auth_ok" not in st.session_state:
     st.session_state.master_auth_ok = False
@@ -24,7 +24,6 @@ st.title("🔑 Manajemen User Registry Hemofilia Indonesia")
 # KONEKSI DATABASE
 # -----------------------------
 def _resolve_db_url() -> str:
-    # Mengambil langsung dari root secrets (sesuai komentar Anda bahwa header dihapus)
     url = st.secrets.get("DATABASE_URL")
     
     if not url:
@@ -42,7 +41,6 @@ def _resolve_db_url() -> str:
 def get_engine(dsn: str) -> Engine:
     try:
         engine = create_engine(dsn, pool_pre_ping=True)
-        # Test koneksi
         with engine.connect() as conn:
             conn.execute(text("SELECT 1"))
         return engine
@@ -53,8 +51,21 @@ def get_engine(dsn: str) -> Engine:
 DB_URL = _resolve_db_url()
 DB_ENGINE = get_engine(DB_URL)
 
-# Menggunakan bcrypt standar agar kompatibel
+# --------------------
+# KEAMANAN PASSWORD (PERBAIKAN UTAMA DI SINI)
+# --------------------
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+
+def hash_safe(password: str) -> str:
+    """
+    Mengamankan hashing password untuk menghindari error 'longer than 72 bytes'.
+    Bcrypt membatasi input max 72 bytes. Kita truncate bytes-nya agar aman.
+    """
+    try:
+        # Encode ke utf-8 bytes, ambil 72 bytes pertama, lalu hash
+        return pwd_context.hash(password.encode('utf-8')[:72])
+    except Exception as e:
+        raise ValueError(f"Gagal melakukan hashing: {e}")
 
 # --------------------
 # DATA CABANG
@@ -62,21 +73,17 @@ pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 @st.cache_data(show_spinner="Memuat daftar cabang...")
 def fetch_cabang_list(_engine: Engine) -> list:
     try:
-        # Pastikan tabel pwh.hmhi_cabang ada. Jika tidak, fungsi ini akan return default.
         query = text("SELECT DISTINCT cabang FROM pwh.hmhi_cabang WHERE cabang IS NOT NULL ORDER BY cabang")
         with _engine.connect() as conn:
             df = pd.read_sql(query, conn)
-        # Dropdown list
         return [""] + df["cabang"].dropna().tolist()
     except Exception:
-        # Fallback jika tabel hmhi_cabang belum dibuat/gagal akses
         return ["", "Pusat", "Aceh", "Sumatera Utara", "DKI Jakarta", "Jawa Barat", "Jawa Tengah", "DI Yogyakarta", "Jawa Timur", "Bali"]
 
 # --------------------
 # CEK MASTER KEY
 # --------------------
 def check_master_key():
-    # Perbaikan: Konsisten mengambil dari root secrets, sama seperti DB URL
     MASTER_KEY = st.secrets.get("MASTER_KEY")
     
     if not MASTER_KEY:
@@ -119,7 +126,9 @@ def fetch_user_list(_engine: Engine):
 
 def update_user_password(_engine: Engine, username: str, new_password: str):
     try:
-        hashed = pwd_context.hash(new_password)
+        # PERBAIKAN: Gunakan fungsi hash_safe
+        hashed = hash_safe(new_password)
+        
         with _engine.begin() as conn:
             conn.execute(
                 text("UPDATE pwh.users SET hashed_password = :p WHERE username = :u"),
@@ -167,7 +176,8 @@ def admin_page():
             with col_c:
                 cabang = st.selectbox("Wilayah Cabang", options=cabang_options)
             
-            password = st.text_input("Password", type="password")
+            # PERBAIKAN: Tambahkan max_chars visual
+            password = st.text_input("Password", type="password", max_chars=72, help="Maksimal 72 karakter")
             
             submitted = st.form_submit_button("Simpan User Baru", type="primary")
 
@@ -182,7 +192,9 @@ def admin_page():
                 else:
                     # Proses Simpan
                     try:
-                        hashed_password = pwd_context.hash(password)
+                        # PERBAIKAN: Gunakan fungsi hash_safe
+                        hashed_password = hash_safe(password)
+                        
                         with DB_ENGINE.begin() as conn:
                             query = text("""
                                 INSERT INTO pwh.users (username, hashed_password, cabang)
@@ -191,7 +203,7 @@ def admin_page():
                             conn.execute(query, {"user": username.lower(), "pass": hashed_password, "branch": cabang})
                         
                         st.success(f"User '{username}' berhasil dibuat untuk cabang '{cabang}'!")
-                        st.cache_data.clear() # Clear cache agar list user terupdate
+                        st.cache_data.clear() 
                     except IntegrityError:
                         st.error(f"Username '{username}' sudah terpakai. Gunakan username lain.")
                     except Exception as e:
@@ -201,7 +213,6 @@ def admin_page():
     with tab2:
         st.subheader("Daftar Pengguna Aktif")
         
-        # Tombol refresh manual jika perlu
         if st.button("🔄 Refresh Data"):
             st.cache_data.clear()
             st.rerun()
@@ -212,14 +223,15 @@ def admin_page():
             st.warning("Belum ada data user.")
         else:
             for i, row in df_users.iterrows():
-                # Card style layout
                 with st.expander(f"👤 {row.username} | 📍 {row.cabang}"):
                     st.caption(f"Dibuat pada: {row.created_at}")
                     
                     c_pass, c_act = st.columns([2, 1])
                     
                     with c_pass:
-                        new_pw = st.text_input("Reset Password:", key=f"pw_{row.id}", type="password", placeholder="Isi jika ingin mengganti")
+                        # PERBAIKAN: Tambahkan max_chars visual
+                        new_pw = st.text_input("Reset Password:", key=f"pw_{row.id}", type="password", placeholder="Isi jika ingin mengganti", max_chars=72)
+                        
                         if st.button("Simpan Password Baru", key=f"btn_up_{row.id}"):
                             if len(new_pw) >= 6:
                                 update_user_password(DB_ENGINE, row.username, new_pw)
