@@ -54,7 +54,10 @@ DB_ENGINE = get_engine(DB_URL)
 # --------------------
 # KEAMANAN PASSWORD (VERSI FINAL & STABIL)
 # --------------------
-pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
+pwd_context = CryptContext(
+    schemes=["bcrypt_sha256"],
+    deprecated="auto"
+)
 
 def hash_safe(password: str) -> str:
     """
@@ -264,3 +267,4 @@ if not st.session_state.master_auth_ok:
     check_master_key()
 else:
     admin_page()
+
